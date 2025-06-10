@@ -45,6 +45,8 @@ static const int RLMEnumerationBufferSize = 16;
 
     RLMRealm *_realm;
     RLMClassInfo *_info;
+    RLMClassInfo *_parentInfo;
+    RLMProperty *_property;
 
     // A pointer to either _snapshot or a Results from the source collection,
     // to avoid having to copy the Results when not in a write transaction
@@ -58,11 +60,15 @@ static const int RLMEnumerationBufferSize = 16;
 
 - (instancetype)initWithBackingCollection:(realm::object_store::Collection const&)backingCollection
                                collection:(id)collection
-                                classInfo:(RLMClassInfo&)info {
+                                classInfo:(RLMClassInfo *)info
+                               parentInfo:(RLMClassInfo *)parentInfo
+                                 property:(RLMProperty *)property {
     self = [super init];
     if (self) {
-        _info = &info;
+        _info = info;
         _realm = _info->realm;
+        _parentInfo = parentInfo;
+        _property = property;
 
         if (_realm.inWriteTransaction) {
             _snapshot = backingCollection.as_results().snapshot();
@@ -79,11 +85,15 @@ static const int RLMEnumerationBufferSize = 16;
 
 - (instancetype)initWithBackingDictionary:(realm::object_store::Dictionary const&)backingDictionary
                                dictionary:(RLMManagedDictionary *)dictionary
-                                classInfo:(RLMClassInfo&)info {
+                                classInfo:(RLMClassInfo *)info
+                               parentInfo:(RLMClassInfo *)parentInfo
+                                 property:(RLMProperty *)property {
     self = [super init];
     if (self) {
-        _info = &info;
+        _info = info;
         _realm = _info->realm;
+        _parentInfo = parentInfo;
+        _property = property;
 
         if (_realm.inWriteTransaction) {
             _snapshot = backingDictionary.get_keys().snapshot();
@@ -146,7 +156,8 @@ static const int RLMEnumerationBufferSize = 16;
     NSUInteger batchCount = 0, count = state->extra[1];
 
     @autoreleasepool {
-        RLMAccessorContext ctx(*_info);
+        auto ctx = _parentInfo ? RLMAccessorContext(*_parentInfo, *_info, _property) :
+        RLMAccessorContext(*_info);
         for (NSUInteger index = state->state; index < count && batchCount < len; ++index) {
             _strongBuffer[batchCount] = _results->get(ctx, index);
             batchCount++;
@@ -195,7 +206,7 @@ NSUInteger RLMFastEnumerate(NSFastEnumerationState *state,
 @interface RLMArrayHolder : NSObject
 @end
 @implementation RLMArrayHolder {
-    std::unique_ptr<id[]> items;
+    std::unique_ptr<void *[]> items; // <<--- 1. this
 }
 
 NSUInteger RLMUnmanagedFastEnumerate(id collection, NSFastEnumerationState *state) {
@@ -211,11 +222,11 @@ NSUInteger RLMUnmanagedFastEnumerate(id collection, NSFastEnumerationState *stat
     // we'd need to forward multiple calls to this method to the same NSArray,
     // which would require holding a reference to it somewhere.
     __autoreleasing RLMArrayHolder *copy = [[RLMArrayHolder alloc] init];
-    copy->items = std::make_unique<id[]>([collection count]);
+    copy->items = std::make_unique<void *[]>([collection count]); // <<--- 2. this
 
     NSUInteger i = 0;
     for (id object in collection) {
-        copy->items[i++] = object;
+        copy->items[i++] = (__bridge void *)object; // <<--- 3. this
     }
 
     state->itemsPtr = (__unsafe_unretained id *)(void *)copy->items.get();
@@ -516,7 +527,7 @@ RLMNotificationToken *RLMAddNotificationBlock(id c, id block,
     }
 
     RLMThreadSafeReference *tsr = [RLMThreadSafeReference referenceWithThreadConfined:collection];
-    RLMRealmConfiguration *config = realm.configuration;
+    RLMRealmConfiguration *config = realm.configurationSharingSchema;
     dispatch_async(queue, ^{
         std::lock_guard lock(token->_mutex);
         if (!token->_realm) {
