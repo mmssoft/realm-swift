@@ -206,7 +206,7 @@ NSUInteger RLMFastEnumerate(NSFastEnumerationState *state,
 @interface RLMArrayHolder : NSObject
 @end
 @implementation RLMArrayHolder {
-    std::unique_ptr<id[]> items;
+    std::unique_ptr<void *[]> items; // <<--- 1. this
 }
 
 NSUInteger RLMUnmanagedFastEnumerate(id collection, NSFastEnumerationState *state) {
@@ -222,11 +222,11 @@ NSUInteger RLMUnmanagedFastEnumerate(id collection, NSFastEnumerationState *stat
     // we'd need to forward multiple calls to this method to the same NSArray,
     // which would require holding a reference to it somewhere.
     __autoreleasing RLMArrayHolder *copy = [[RLMArrayHolder alloc] init];
-    copy->items = std::make_unique<id[]>([collection count]);
+    copy->items = std::make_unique<void *[]>([collection count]); // <<--- 2. this
 
     NSUInteger i = 0;
     for (id object in collection) {
-        copy->items.get()[i++] = object;
+        copy->items[i++] = (__bridge void *)object; // <<--- 3. this
     }
 
     state->itemsPtr = (__unsafe_unretained id *)(void *)copy->items.get();
